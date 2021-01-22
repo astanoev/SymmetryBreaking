@@ -127,7 +127,7 @@ classdef model < handle
                 ms_resh = ms.state(:,:,:,end);
                 ms_resh = reshape(ms_resh, size(ms_resh,1)*size(ms_resh,2), []);
                 ss_mean = zeros(numel(obj.ss_label),numel(obj.labels));
-                [ss, ssl] = ms.get_steady_state_labels();
+                %[ss, ssl] = ms.get_steady_state_labels();
                 for i=1:max(ms.steady_state_labels(:))
                     ss_mean(i,:) = mean(ms_resh(ms.steady_state_labels == i,:));
                 end
@@ -234,101 +234,9 @@ classdef model < handle
             obj.init_conds = obj.init_conds + obj.init_conds.*obj.ics_std.*randn(obj.rng_stream, size(obj.init_conds));
         end
         
-        function ss = label_steady_states(obj, state)
-            if isempty(obj.ss); obj.set_steady_states(); end
-            ss = obj.ss;
-            n_sss = size(obj.ss.ss_mean,1); 
-            n_vars_used = size(state,3);
-            state_resh = reshape(squeeze(state(:,:,:,end)),size(state,1)*size(state,2),n_vars_used);
-            n_dp = size(state_resh,1);
-%             
-%             AICs = zeros(1,3);
-%             gm = cell(1,3);
-%             for i=1:3
-%                 try
-%                     gm{i} = fitgmdist(state_resh,i,'Regularize',1e-5);
-%                     AICs(i) = gm{i}.AIC;
-%                 catch ex
-%                     AICs(i) = inf;
-%                 end
-%             end
-%             [~,idx] = min(AICs);
-%             prob = posterior(gm{idx},state_resh);
-%             [~,ix] = min(pdist2(gm{idx}.mu,ss.ss_mean),[],1);
-%             prob = prob(:,ix);
-%             [~,ss] = max(prob,[],2);
-%             ss = reshape(ss,size(state,1),size(state,2));
-%             return;
-            
-            prob = zeros(n_dp,n_sss);
-            memb = ones(1,n_sss)./n_sss;
-            sigmas = [1,1,0.3];
-            for t=1:1000
-                % E-step: update probability for generating of each point
-                % from each of the gaussian clusters
-                if t==1
-                    prob = exp(-pdist2(state_resh,ss.ss_mean).^2./repmat(sigmas.^2,n_dp,1));
-                else
-                    for i=1:n_sss
-                        if isempty(find(ss2==i, 1)); prob(:,i) = 0; continue; end
-                        try
-                            prob(:,i) = memb(i).*mvnpdf(state_resh, ss.ss_mean(i,:), squeeze(ss.ss_cov(i,:,:))+1e-5*eye(n_vars_used));
-                        catch
-                            prob(:,i) = 0;
-                        end
-                    end
-                end
-                prob = prob./repmat(sum(prob,2),1,n_sss); 
-                [~,ss2] = max(prob,[],2);
-                % M-step: update memberships of each cluster only
-                n_k = sum(prob,1);
-                for i=1:n_sss
-                    ss.ss_mean(i,:) = sum(state_resh.*repmat(prob(:,i),1,n_vars_used),1)./n_k(1,i);
-                    qwe = repmat(state_resh-repmat(ss.ss_mean(i,:),n_dp,1),1,1,n_vars_used);
-                    qwet = permute(qwe,[1,3,2]);
-                    ss.ss_cov(i,:,:) = squeeze(sum(qwe.*qwet.*repmat(prob(:,i),1,n_vars_used,n_vars_used),1))./n_k(1,i);
-%                     cov(state_resh-repmat(obj.ss.ss_mean(i,:),n_dp,1),prob(:,i)./n_k(1,i));
-%                     obj.ss.ss_cov(i,:,:) = sum(((state_resh-repmat(obj.ss.ss_mean(i,:),n_dp,1))'*(state_resh-repmat(obj.ss.ss_mean(i,:),n_dp,1))).*repmat(prob(:,i),1,3),1)./n_k(1,i);
-                end
-                memb_2 = n_k./n_dp;
-                % check convergence
-                if norm(memb_2-memb)<=1e-8; break; end
-                memb = memb_2;
-            end
-            disp(t);
-            [~,ss] = max(prob,[],2);
-            ss = reshape(ss,size(state,1),size(state,2));
+        function label_steady_states(~)
         end
                 
-        function ss = steady_states_2(obj, state)
-            % cluster steady states according to 0.5 and 1.5
-            % thresholds on gata6 value
-            ss = squeeze(floor((state(:,:,1,end)*10+7.5)/12.5)+1);
-            % flip 2 and 3
-            ss(ss<1)=1; ss(ss>3)=3;
-            ss(ss==2) = -1; ss(ss==3) = 2; ss(ss==-1) = 3;
-            % ss=1 (nanog+), ss=2 (gata6+), ss=3 (mlp/g6+n+)
-            ss_mean = zeros(3,obj.n_vars);
-            ss_cov = zeros(3,obj.n_vars,obj.n_vars);
-            for i=1:3
-                [x,y] = find(ss==i);
-                figure();
-                ss_data = zeros(length(x),obj.n_vars);
-                for j=1:obj.n_vars
-                    ss_data(:,j) = state(sub2ind(size(state),x,y,j.*ones(size(x)),size(state,4).*ones(size(x))));
-                    ss_mean(i,j) = mean(ss_data(:,j));
-                    subplot(1,obj.n_vars,j);hold on;
-                    hist(ss_data(:,j));
-                    yVal = ylim;
-                    plot([ss_mean(i,j),ss_mean(i,j)],[yVal(1),yVal(2)],'--','linewidth',2);
-                end
-                ss_mean(i,:) = mean(ss_data);
-                ss_cov(i,:,:) = cov(ss_data);
-                figure(100);hold on;
-                scatter(ss_data(:,1),ss_data(:,2),'o');
-            end
-        end
-        
         function quasy_steady_state(~)
         end
                 

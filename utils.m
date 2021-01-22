@@ -1,6 +1,6 @@
 classdef utils < handle
     properties
-        folder_simulations_main = fullfile('//billy.storage.mpi-dortmund.mpg.de','abt2','group','agkoseska','Stanoev_Angel','Differentiation','Analysis','Matlab','mat','model_simulations');
+        folder_simulations_main = fullfile('data');
         
         folder_ics_ss = '';
         folder_data = '';

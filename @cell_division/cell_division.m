@@ -20,8 +20,9 @@ classdef cell_division < handle
         model_class = @models.u_v_dn_model;
         ms_par = struct();
         cols = [[255,150,150];[150,185,255];[185,255,185]]./255;
+        fontsize = 20;
         rng_stream;
-        use_prev = false;
+        use_prev = [];
         state_initial = 0; % load from file (used in fate-separation)
     end
     
@@ -31,6 +32,7 @@ classdef cell_division < handle
     
     methods
         animation(obj, save_animation);
+        erase_text_newer(obj, str);
         [fr_sst, clus_radius, mi, u_frac, range] = calc_u_frac_clustering(obj);
         
         function obj = cell_division(varargin)
@@ -45,11 +47,13 @@ classdef cell_division < handle
             addParameter(p,'neigh_class',obj.neigh_class);
             addParameter(p,'model_class',obj.model_class);
             addParameter(p,'neigh_range',obj.neigh_range);
+            addParameter(p,'stochastic',obj.stochastic);
             addParameter(p,'X_std',obj.X_std);
             addParameter(p,'ms_par',obj.ms_par);
             addParameter(p,'ics',obj.ics);
             addParameter(p,'ics_std',obj.ics_std);
             addParameter(p,'par_vary',obj.par_vary);
+            addParameter(p,'use_prev',[]);
             parse(p,varargin{:});
             
             obj.k_1 = p.Results.k_1;
@@ -60,11 +64,13 @@ classdef cell_division < handle
             obj.neigh_class = p.Results.neigh_class;
             obj.model_class = p.Results.model_class;
             obj.neigh_range = p.Results.neigh_range;
+            obj.stochastic = p.Results.stochastic;
             obj.X_std = p.Results.X_std;
             obj.ms_par = p.Results.ms_par;
             obj.ics = p.Results.ics;
             obj.ics_std = p.Results.ics_std;
             obj.par_vary = p.Results.par_vary;
+            obj.use_prev = p.Results.use_prev;
             
             obj.set_rng_stream(p.Results.rng_seed);
             
@@ -103,28 +109,24 @@ classdef cell_division < handle
             reset(obj.rng_stream);
             for k=obj.k_1:obj.k_2
                 [m, n] = neighbourhood.neighbourhood.get_m_n(k, obj.m_seed, obj.n_seed);
-                if k<=3 || true
-                    neigh = obj.neigh_class(m, n, obj.neigh_range, 'rng_seed', randi(obj.rng_stream,floor(intmax/10)));
-                else
-                    neigh = neighbourhood.no_grid(m, n, obj.neigh_range, 'rng_seed', randi(obj.rng_stream,floor(intmax/10)));
-                    obj.ms_par = struct('s_ext',1.2);
-                end
+                neigh = obj.neigh_class(m, n, obj.neigh_range, 'rng_seed', randi(obj.rng_stream,floor(intmax/10)));
                 model = obj.model_class(neigh, 'mlp', mlp, 'rng_seed', randi(obj.rng_stream,floor(intmax/10)));
                 if ~isempty(obj.par_vary)
                     if k==obj.k_1 || true
                         model.vary_parameters_std(obj.par_vary);
                     else
-                        par_prev = mss(k-obj.k_1).model.par;
-                        m_prev = mss(k-obj.k_1).neigh.m;
-                        n_prev = mss(k-obj.k_1).neigh.n;
+                        par_prev = mss_obj(k-obj.k_1).model.par;
+                        m_prev = mss_obj(k-obj.k_1).neigh.m;
+                        n_prev = mss_obj(k-obj.k_1).neigh.n;
                         % get matrix to distribute the end states as the next
                         % initial states to the daughter cells
-                        mat = obj.get_mat(m_prev,n_prev);
+                        vert_div = m>m_prev;
+                        mat = obj.get_mat(m_prev,n_prev,vert_div);
                         fs = fields(obj.par_vary);
                         for j=1:length(fs)
                             par = zeros(neigh.m,neigh.n);
                             par_prev_par = reshape(par_prev.(fs{j}),m_prev,n_prev);
-                            if n_prev<=m_prev % expand horizontally
+                            if ~vert_div % expand horizontally
                                 par(:,:) = par_prev_par*mat;
                             else % expand vertically
                                 par(:,:) = mat*par_prev_par;
@@ -134,9 +136,9 @@ classdef cell_division < handle
                         model.mlp = zeros(neigh.m,neigh.n,model.n_vars);
                         for i=1:model.n_vars
                             if n_prev<=m_prev % expand horizontally
-                                model.mlp(:,:,i) = mss(k-obj.k_1).model.mlp(:,:,i)*mat;
+                                model.mlp(:,:,i) = mss_obj(k-obj.k_1).model.mlp(:,:,i)*mat;
                             else % expand vertically
-                                model.mlp(:,:,i) = mat*mss(k-obj.k_1).model.mlp(:,:,i);
+                                model.mlp(:,:,i) = mat*mss_obj(k-obj.k_1).model.mlp(:,:,i);
                             end
                         end
                         model.identical_cells = 0;
@@ -150,9 +152,9 @@ classdef cell_division < handle
                 if ~isempty(fields(obj.ms_par)); ms.update_parameters(obj.ms_par); end
                 ms.stochastic = obj.stochastic;
                 %ms.X_std = 0.12;
-                mss(k-obj.k_1+1) = ms; %#ok<AGROW>
+                mss_obj(k-obj.k_1+1) = ms; %#ok<AGROW>
             end
-            obj.mss = mss;
+            obj.mss = mss_obj;
         end
         
         function grid_simulation_cell_division(obj)
@@ -160,46 +162,48 @@ classdef cell_division < handle
             for k=obj.k_1:obj.k_2
                 ind = k-obj.k_1+1;
                 if ind==1
-                    if obj.use_prev && exist(utils(1).fullfile(utils().folder_data,strcat('cell_division_state=',num2str(obj.state_initial),'_ics.mat')),'file')
-                        s = load(utils(1).fullfile(utils().folder_data,strcat('cell_division_state=',num2str(obj.state_initial),'_ics.mat')));
-                        for i=1:m
-                            for j=1:n
-                                obj.mss(ind).model.init_conds(i,j,:) = s.ics(:,sub2ind([m,n],i,j));
-                            end
-                        end
+                    %if obj.use_prev && exist(utils(1).fullfile(utils().folder_data,strcat('cell_division_state=',num2str(obj.state_initial),'_ics.mat')),'file')
+                    %    s = load(utils(1).fullfile(utils().folder_data,strcat('cell_division_state=',num2str(obj.state_initial),'_ics.mat')));
+                    if ~isempty(obj.use_prev)
+                        obj.mss(ind).model.set_initial_cond(obj.use_prev);
                     end
                 else
-                    end_state_prev = obj.mss(ind-1).state(:,:,:,end);
+                    state_end_prev = obj.mss(ind-1).state(:,:,:,end);
                     m_prev = obj.mss(ind-1).neigh.m;
                     n_prev = obj.mss(ind-1).neigh.n;
                     % get matrix to distribute the end states as the next
                     % initial states to the daughter cells
-                    mat = obj.get_mat(m_prev,n_prev);
-                    ics = zeros(obj.mss(ind).neigh.m,obj.mss(ind).neigh.n,obj.mss(ind).model.n_vars);
+                    vert_div = obj.mss(ind).neigh.m>m_prev;
+                    mat = obj.get_mat(m_prev, n_prev, vert_div);
+                    ics_arr = zeros(obj.mss(ind).neigh.m,obj.mss(ind).neigh.n,obj.mss(ind).model.n_vars);
                     for i=1:obj.mss(ind).model.n_vars
-                        if n_prev<=m_prev % expand horizontally
-                            ics(:,:,i) = end_state_prev(:,:,i)*mat;
+%                         try
+                        if ~vert_div % expand horizontally
+                            ics_arr(:,:,i) = state_end_prev(:,:,i)*mat;
                         else % expand vertically
-                            ics(:,:,i) = mat*end_state_prev(:,:,i);
+                            ics_arr(:,:,i) = mat*state_end_prev(:,:,i);
                         end
+%                         catch ex
+%                             disp('asd');
+%                         end
                     end
-                    obj.mss(ind).model.init_conds = ics;
+                    obj.mss(ind).model.init_conds = ics_arr;
                     %obj.mss(ind).set_rng_init(obj.mss(ind-1).rng_final);
                 end
                 obj.mss(ind).integrate();
             end
         end
         
-        function mat = get_mat(~, m, n)
+        function mat = get_mat(~, m, n, vert_div)
             mat1 = [1,1];
             mat = mat1;
             % create block-diagonal matrix from mat1
             % needs to have as min(m,n) repetitions of mat1, as that
             % corresponds to the division axis
-            for kk=2:min(m,n)
+            for kk=2:(m*vert_div+n*(1-vert_div))
                 mat = blkdiag(mat,mat1);
             end
-            if m<n; mat = mat'; end % flip if vertical division
+            if vert_div; mat = mat'; end % flip if vertical division
         end
         
         function str = get.id_str(obj)
@@ -222,7 +226,7 @@ classdef cell_division < handle
             fig = figure('position',[500, 50, 1000, 1000]);
             fig.Renderer = 'Painters';
             x_offset = 0.025;
-            n_metrics = 3;
+            n_metrics = 2;
             subgroup = gobjects(1,2+n_metrics);
             subgroup(1) = uipanel('Parent', fig, 'Units', 'normal', 'Position', [0.02 2/3 0.96 1/3], 'BorderType', 'none');
             subgroup(2) = uipanel('Parent', fig, 'Units', 'normal', 'Position', [0.0 1/3 1.0 1/3], 'BorderType', 'none');
@@ -232,8 +236,8 @@ classdef cell_division < handle
             ax = gobjects(size(subgroup));
             obj.plot_steady_state_grids(subgroup(1));
             [~, ax(2)] = obj.plot_ratio(subgroup(2));
-            [fr_sst, clus_radius, mi] = obj.calc_u_frac_clustering();
-            metric = {fr_sst; clus_radius; mi};
+            [fr_sst, clus_radius, ~] = obj.calc_u_frac_clustering();
+            metric = {fr_sst; clus_radius};
             metric_label = {'Fraction of {\fontname{Cambria Math} u+} cells'; '{\fontname{Cambria Math} u+} cluster radius'; 'Morgan''s Index'};
             
             for i=3:length(ax)
@@ -242,7 +246,7 @@ classdef cell_division < handle
                 plot(ax(i), obj.k_1:obj.k_2, metric{i-2}(:,1), 'ks-', 'linewidth', 2, 'markersize', 4);
                 ylabel(ax(i), metric_label{i-2});
                 set(ax(i),'fontname','Arial');
-                set(ax(i),'fontsize',15);
+                set(ax(i),'fontsize',obj.fontsize);
                 %set(ax(i), 'XTick', 1:length(clus));
                 %set(ax(i), 'XTick', 1:2:length(clus));
                 if length(clus_radius)>1
@@ -346,28 +350,28 @@ classdef cell_division < handle
             if nargin<2; fig1 = obj.plot_lineage_tree(); end
             if nargin<3; fig2 = obj.plot_ratio(); end
             fig = figure();
-            h(1)=subplot(4,1,2:4,'align'); hold on; box on;
+            h(1)=subplot(4,1,2:4,'align'); hold(h(1),'on'); box(h(1),'on');
             % Paste figures on the subplots
             copyobj(allchild(get(fig1,'CurrentAxes')),h(1));
             close(fig1);
             
-            h(2)=subplot(4,1,1,'align'); hold on; box on;
+            h(2)=subplot(4,1,1,'align'); hold(h(2),'on'); box(h(2),'on');
             copyobj(allchild(get(fig2,'CurrentAxes')),h(2));
             close(fig2);
+            ylim(h(2),[0,1]);
             
             xlabel(h(1),'Cell division');
-            %ylabel(h(1),['Cell state ({\color[rgb]{',num2str(obj.cols(1,:)),'}u}/{'...
-            %'\color[rgb]{',num2str(obj.cols(2,:)),'}v}/{\color[rgb]{',num2str(0.8*obj.cols(3,:)),'}hd})']);
-            ylabel(h(1),'Cell states');
+            %y_s = ylabel(h(1),{'Cell states';['({\fontname{Cambria Math}{\color[rgb]{',num2str(obj.cols(1,:)),'}u+}{/}{'...
+            %'\color[rgb]{',num2str(obj.cols(2,:)),'}v+}{/}{\color[rgb]{',num2str(0.8*obj.cols(3,:)),'}mlp}})']});
+            y_s = ylabel(h(1),['Cell states ','({\fontname{Cambria Math}{\color[rgb]{',num2str(obj.cols(1,:)),'}u+}{/}{'...
+            '\color[rgb]{',num2str(obj.cols(2,:)),'}v+}{/}{\color[rgb]{',num2str(0.8*obj.cols(3,:)),'}mlp}})']);
             set(h(1), 'YTick', []);
-            %ylabel(h(2),{'Fraction of'; ['{\color[rgb]{',num2str(obj.cols(1,:)),'}u}/{'...
-            %    '\color[rgb]{',num2str(obj.cols(2,:)),'}v}/{\color[rgb]{',num2str(0.8*obj.cols(3,:)),'}hd} cells']});
-            ylabel(h(2),'Proportions');
+            y_p = ylabel(h(2),'Proportions');
             yyaxis right;
             h(2).YAxis(2).Color = 'k';
             for i=1:2
                 set(h(i),'fontname','Arial');
-                set(h(i),'fontsize',30);
+                set(h(i),'fontsize',obj.fontsize);
                 set(h(i), 'Layer', 'top');
                 set(h(i), 'XTick', 0:obj.k_2);
                 xlim(h(i),[0,obj.k_2]);
@@ -375,8 +379,24 @@ classdef cell_division < handle
             set(h(2), 'XTick', []);
             linkaxes(h,'x');
             fig.Renderer = 'Painters';
-            set(fig,'Position',[140,60,1080+350*1,1040]);
-            drawnow;
+            set(fig,'Position',[140,60,1000,727]);
+            %drawnow;
+            y_s.Position(1) = y_s.Position(1) + y_p.Extent(1)-y_s.Extent(1);
+            h(1).Position(2) = h(1).Position(2) + 0.04;
+            %drawnow;
+            states_init = obj.mss(1).model.label_steady_states(obj.mss(1).state(:,:,:,1));
+            poss = 1/(2*length(states_init(:))):1/length(states_init(:)):1;
+            for i=1:length(states_init(:))
+                ar = annotation(fig,'arrow');
+                ar.LineWidth = 4.5;
+                ar.Color = 0.95*obj.cols(states_init(i),:);
+                p1 = h(1).Position(1)+y_s.Position(1)*h(1).Position(3)/(h(1).XLim(2)-h(1).XLim(1));
+                p2 = h(1).Position(1);
+                ar.Position(1) = p1+0.2*(p2-p1);
+                ar.Position(3) = 0.7*(p2-p1);
+                ar.Position(2) = h(1).Position(4)*poss(i) +h(1).Position(2);
+                ar.Position(4) = 0;
+            end
         end
         
         function [fig, ax] = plot_ratio(obj, fig)
@@ -389,10 +409,8 @@ classdef cell_division < handle
             box(ax,'on');
             for k=obj.k_1:obj.k_2
                 ind = k-obj.k_1+1;
-                %obj.mss(ind).model.mlp_std = 0.05;
-                %obj.mss(ind).neigh.set_n_selfneighs();
                 state_p = obj.mss(ind).state;
-                col_grid = obj.mss(ind).model.label_steady_states(state_p, true);
+                col_grid = obj.mss(ind).model.label_steady_states(state_p, obj.stochastic);
                 freq = zeros(size(col_grid,3),3);
                 cum_freq = zeros(size(col_grid,3),3);
                 for t=1:size(col_grid,3)
@@ -401,18 +419,17 @@ classdef cell_division < handle
                     cum_freq(t,:) = cumsum(freq(t,:));
                 end
                 for i=3:-1:1
-                    x1 = (k-1) +obj.mss(ind).time./obj.mss(ind).time(end);
+                    x1 = (k-1) +[obj.mss(ind).time,obj.mss(ind).time(end)+obj.mss(ind).dt]./(obj.mss(ind).time(end)+obj.mss(ind).dt);
                     % to draw rectangular bar-like plots, instead of
                     % patches with non-vertical edges, repeat elements etc
                     x1 = repelem(x1,2);
-                    x1 = x1(2:end);
+                    x1 = x1(2:(end-1));
                     x2 = fliplr(x1); % flip for the upper part of the patch
                     if i==1
                         y1 = zeros(size(x1));
                     else
                         y1 = cum_freq(:,i-1)';
                         y1 = repelem(y1,2);
-                        y1 = y1(1:end-1);
                     end
                     % remove frames with same y-level as the neighbors to
                     % reduce patch details and save memory
@@ -421,12 +438,11 @@ classdef cell_division < handle
                     y1(y1_rmv) = [];
                     y2 = cum_freq(:,i)';
                     y2 = repelem(y2,2);
-                    y2 = y2(1:end-1);
                     y2 = fliplr(y2);
                     y2_rmv = 1+find((y2(2:(end-1))==y2(1:(end-2))) & (y2(3:end)==y2(2:(end-1))));
                     x2(y2_rmv) = [];
                     y2(y2_rmv) = [];
-                    patch(ax,[x1,x2],[y1,y2],obj.cols(i,:),'edgecolor','none');
+                    patch(ax,[x1,x2],[y1,y2+1e-5],obj.cols(i,:),'edgecolor','none');
                 end
                 if ind>1
                     plot(ax,[ind-1,ind-1],[0,1],'k--','linewidth',0.5);
@@ -434,7 +450,7 @@ classdef cell_division < handle
             end
             xlabel(ax,'Cell division');
             set(ax,'fontname','Arial');
-            set(ax,'fontsize',15);
+            set(ax,'fontsize',obj.fontsize);
             set(ax, 'Layer', 'top');
             set(ax, 'XTick', 0:obj.k_2);
             xlim(ax,[0,obj.k_2]);
@@ -446,37 +462,40 @@ classdef cell_division < handle
         end
         
         function fig = plot_lineage_tree(obj)
-            fig = figure(); ax = gca(); hold on; box on;
-            xlabel('Cell division');
+            fig = figure(); 
+            ax = axes('Parent',fig); hold(ax,'on'); box(ax,'on');
+            xlabel(ax,'Cell division');
             set(ax,'fontname','Arial');
-            set(ax,'fontsize',30);
+            set(ax,'fontsize',obj.fontsize);
             set(ax, 'XTick', 0:obj.k_2);
-            xlim([0,obj.k_2]);
-            ylabel(['Cell state ({\color[rgb]{',num2str(obj.cols(1,:)),'}u}/{'...
-            '\color[rgb]{',num2str(obj.cols(2,:)),'}v}/{\color[rgb]{',num2str(0.8*obj.cols(3,:)),'}mlp})']);
+            xlim(ax,[0,obj.k_2]);
+            ylabel(ax,['Cell state ({\fontname{Cambria Math}{\color[rgb]{',num2str(obj.cols(1,:)),'}u+}/{'...
+            '\color[rgb]{',num2str(obj.cols(2,:)),'}v+}/{\color[rgb]{',num2str(0.8*obj.cols(3,:)),'}mlp}})']);
             set(ax, 'YTick', []);
             
-            height_curr = 2*[-3,-2,-1;0,1,2];
+            n_cells_init = obj.mss(1).neigh.m*obj.mss(1).neigh.n;
+%             height_curr = -0.5+1/(2*n_cells_init):1/n_cells_init:1;%2*[-3,-2,-1;0,1,2];
+            height_curr = 2*reshape((1:n_cells_init)-ceil(n_cells_init/2),obj.mss(1).neigh.m,obj.mss(1).neigh.n);
+%             height_curr = 2*[-3,-2,-1;0,1,2];
             for k=obj.k_1:obj.k_2
                 ind = k-obj.k_1+1;
                 if ind>1
                     m_prev = obj.mss(ind-1).neigh.m;
                     n_prev = obj.mss(ind-1).neigh.n;
-                    mat = obj.get_mat(m_prev,n_prev);
-                    if n_prev<=m_prev 
+                    vert_div = obj.mss(ind).neigh.m>obj.mss(ind-1).neigh.m;
+                    mat = obj.get_mat(m_prev,n_prev,vert_div);
+                    if ~vert_div
                         height_curr = height_curr*mat;
                     else
                         height_curr = mat*height_curr;
                     end
                 end
-                height_curr = obj.plot_lineage_tree_cycle(k, fig, height_curr);
+                height_curr = obj.plot_lineage_tree_cycle(k, ax, height_curr);
             end
             fig.Renderer = 'Painters';
         end
         
-        function height_curr = plot_lineage_tree_cycle(obj, k, fig, height_prev)
-            figure(fig);
-            
+        function height_curr = plot_lineage_tree_cycle(obj, k, ax, height_prev)
             ind = k-obj.k_1+1;
             x = obj.mss(ind).time./obj.mss(ind).time(end) +(k-1); %x = obj.time+obj.tmax*(k-1);
             
@@ -500,27 +519,27 @@ classdef cell_division < handle
                 height_curr(i,j) = hc; % update current height matrix for next iteration
 
                 % set state in every time point according to steady states
-                obj.mss(ind).stochastic_steady_state = true; % just in case..
-                col_grid = obj.mss(ind).model.label_steady_states(state_p);
+%                 obj.mss(ind).stochastic_steady_state = true; % just in case..
+                col_grid = obj.mss(ind).model.label_steady_states(state_p, obj.stochastic);
                 % get state vector of cell and split into unchainged segments
                 col = squeeze(col_grid(i,j,:));
                 
                 col_diff = col(2:end)-col(1:end-1);
-                col_split_inxs = find(col_diff~=0);
+                col_split_inxs = find(col_diff~=0)+1;
                 x1 = 1; x2 = 1;
                 % plot consecutive segments in a loop
                 for l=1:length(col_split_inxs)
-                    x2 = col_split_inxs(l)+1;
-                    if l>1; x1 = col_split_inxs(l-1)+1; end
-                    plot([x(x1),x(x2)],[hc,hc],'color',obj.cols(col(x1),:),'linewidth',5);
+                    x2 = col_split_inxs(l);
+                    if l>1; x1 = col_split_inxs(l-1); end
+                    plot(ax,[x(x1),x(x2)],[hc,hc],'color',obj.cols(col(x1),:),'linewidth',5);
                 end
-                plot([x(x2),x(end)],[hc,hc],'color',obj.cols(col(x2),:),'linewidth',5);
+                plot(ax,[x(x2),x(end)],[hc,hc],'color',obj.cols(col(x2),:),'linewidth',5);
                 
                 % plot dashed line from mother end to daugther cell start
-                if k>1; plot([x(1),x(1)],[hp,hc],'k--','linewidth',0.5); end
+                if k>1; plot(ax,[x(1),x(1)],[hp,hc],'k--','linewidth',0.5); end
             end
-            set(fig,'Position',[140,60,1080+350*1,1040]);
-            drawnow;
+            %set(fig,'Position',[140,60,1080+350*1,1040]);
+            %drawnow;
         end
     end 
 end

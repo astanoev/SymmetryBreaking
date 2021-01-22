@@ -26,7 +26,7 @@ function animation(obj, save_animation)
         steps_cell_division = round(steps_cell_division/j_step);
     end
 
-    fig = figure('visible', visible,'position',[584,345,560,560]);
+    fig = figure('visible', visible,'position',[150,150,560,560]);
 
     ax0 = axes('Parent',fig,'Units','normalized','Position',[0.0, 0.0, 1.0, 1.0],...
         'XLim', [0, 1],'YLim', [0, 1],'Visible','off','NextPlot','add');
@@ -77,12 +77,10 @@ function animation(obj, save_animation)
         ss = obj.mss(i).model.label_steady_states(obj.mss(i).state, obj.stochastic);
         j_print_curr = 1;
         for j = 1:j_step:n_time_points
-            if ~isvalid(fig); fprintf(strjoin(repelem("\b",length(str)),'')); return; end
+            if ~isvalid(fig); erase_text(str); return; end
             if j==1
                 tit.String = ['cell cycle ',num2str(i),' (',num2str(obj.mss(i).neigh.m),'x',num2str(obj.mss(i).neigh.n),')'];
                 im = imshow(ss(:,:,j),'Parent',ax,'DisplayRange',[1,3],'Colormap',cols,'InitialMagnification','fit');
-                %im = imshow(ss(:,:,3*j),'Parent',ax,'DisplayRange',[1,3],'Colormap',cols,'InitialMagnification','fit');
-                %im = imshow(ss(:,:,(j-1)*floor(size(ss,3)/n_time_points)+1),'Parent',ax,'DisplayRange',[1,3],'Colormap',cols,'InitialMagnification','fit');
                 daspect(ax,[1,1,1]);
                 set(ax,'position',[0.1125, 0.1, 0.775, 0.815]);
                 grid(ax,'on');
@@ -100,8 +98,6 @@ function animation(obj, save_animation)
                 set(ax,'TickLength',[0 0]);
             else
                 im.CData = ss(:,:,j);
-                %im.CData = ss(:,:,3*j);
-                %im.CData = ss(:,:,(j-1)*floor(size(ss,3)/n_time_points)+1);
             end
             if mod(i,2)==1 && i<length(obj.mss) && mod(j,j_zoom_step)==0 && j>=j_zoom_start
                 set(ax,'position',[0.1125, (n_time_points-j)/(n_time_points-j_zoom_start)*0.1 + (j-j_zoom_start)/(n_time_points-j_zoom_start)*0.3125, 0.775, (n_time_points-j)/(n_time_points-j_zoom_start)*0.815 + (j-j_zoom_start)/(n_time_points-j_zoom_start)*0.815*0.475]);
@@ -109,12 +105,11 @@ function animation(obj, save_animation)
                     tit.String = {tit.String,'- zooming out -'};
                 end
             end
-            if ~isvalid(fig); fprintf(strjoin(repelem("\b",length(str)),'')); return; end
+            if ~isvalid(fig); erase_text(str); return; end
             drawnow;
             if floor(j/j_print_update) > j_print_curr
                 j_print_curr = floor(j/j_print_update);
-                %for i_erase=1:length(str); fprintf('\b'); end
-                fprintf(strjoin(repelem("\b",length(str)),''));
+                erase_text(str);
                 str = sprintf('cell cycle %d, iteration %d',i,j_print_curr*j_print_update);
                 fprintf(str);
             end
@@ -136,7 +131,7 @@ function animation(obj, save_animation)
             tit.String = 'cell division';
             drawnow;
             for k=1:steps_cell_division
-                if ~isvalid(fig); fprintf(strjoin(repelem("\b",length(str)),'')); return; end
+                if ~isvalid(fig); erase_text(str); return; end
                 if mod(i,2) == 1
                     daspect(ax,[1,1+k/steps_cell_division,1]);
                 else
@@ -161,7 +156,7 @@ function animation(obj, save_animation)
         end
     end
 
-    fprintf(strjoin(repelem("\b",length(str)),''));
+    erase_text(str);
 
     if save_animation == 2; close(myVideo); end
 
@@ -173,9 +168,16 @@ function animation(obj, save_animation)
         else
             [status, ~] = system(['cd "', folder, '" & ffmpeg -r 30 -i "img%05d.png" -pix_fmt yuv420p "',condition,'_slow.mp4" & ffmpeg -i "',condition,'_slow.mp4" -r 300 -filter:v "setpts=0.1*PTS" "',condition,'_normal.mp4" & ffmpeg -i "',condition,'_slow.mp4" -r 600 -filter:v "setpts=0.05*PTS" "',condition,'_fast.mp4" & exit']);
         end
-        fprintf(strjoin(repelem("\b",length(str)),''));
+        erase_text(str);
         if status ~= 0
             disp('problem saving videos');
+        end
+    end
+    
+    function erase_text(str)
+        % have to do it like this for older versions of matlab (<R2017a)
+        for i_erase=1:length(str)
+            fprintf('\b');
         end
     end
 end

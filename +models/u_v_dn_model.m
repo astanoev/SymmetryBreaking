@@ -13,7 +13,7 @@ classdef u_v_dn_model < models.model
             obj.max_vals = [3.0,3.0,3.0];
             obj.mlp_std = 0.01; % inclusive std around mlp state
             obj.mlp_std_stoch = 0.05;
-            obj.tmax = 50;
+            obj.tmax = 20;
             obj.par = struct(...
                 'alfa1',2.3,'alfa2',3.5,'alfa3',1,'alfa4',2,...
                 'beta',2,'gamma',2,'delta',2,'eta',2,...
@@ -25,7 +25,7 @@ classdef u_v_dn_model < models.model
                 if ~isempty(obj.mlp)
                     set_initial_cond@models.model(obj);
                 else
-                    ics = [1.54845726300375; 1.12263718086462; 1.11516727828357];
+                    ics = [1.548; 1.123; 1.115];
                     set_initial_cond@models.model(obj,ics);
                 end
             elseif nargin<3
@@ -44,10 +44,6 @@ classdef u_v_dn_model < models.model
             v_lbl_idx = obj.label_index('v'); u_lbl_idx = obj.label_index('u');
             v_ss_idx = obj.ss_label_index('v+'); u_ss_idx = obj.ss_label_index('u+'); mlp_ss_idx = obj.ss_label_index('mlp');
             mlp_mat = repmat(obj.mlp_mat,[1,1,1,size(state,4)]);
-            %if ~exist('mlp_std','var'); obj.mlp_std = 0.05; end
-            %obj.mlp_std = 0.05;
-            %ss(state(:,:,v_lbl_idx,:)./state(:,:,u_lbl_idx,:) > obj.mlp(v_lbl_idx)./obj.mlp(u_lbl_idx)) = v_ss_idx;
-            %ss(state(:,:,v_lbl_idx,:)./state(:,:,u_lbl_idx,:) < obj.mlp(v_lbl_idx)./obj.mlp(u_lbl_idx)) = u_ss_idx;
             ss(state(:,:,v_lbl_idx,:)./state(:,:,u_lbl_idx,:) > mlp_mat(:,:,v_lbl_idx,:)./mlp_mat(:,:,u_lbl_idx,:)) = v_ss_idx;
             ss(state(:,:,v_lbl_idx,:)./state(:,:,u_lbl_idx,:) < mlp_mat(:,:,v_lbl_idx,:)./mlp_mat(:,:,u_lbl_idx,:)) = u_ss_idx;
             ss(prod(abs((state-mlp_mat))<mlp_std_ss*mlp_mat,3)==1) = mlp_ss_idx;
@@ -115,27 +111,8 @@ classdef u_v_dn_model < models.model
             %s_ext = (obj.par.alfa3./(u-obj.par.alfa1./(1+v.^obj.par.beta))-1).^(1./obj.par.eta);
             y = [v; u; s; s_ext];
         end
-
-        function f = f_continuation(obj, x)
-            s_ext = x(1, :); s = x(2, :);
-            u = (s./(obj.par.alfa4 -s)).^(1./obj.par.delta);
-            v = (obj.par.alfa1./(u -obj.par.alfa3./(1 +s_ext.^obj.par.eta)) -1).^(1./obj.par.beta);
-            f = obj.par.alfa2./(1 +u.^obj.par.gamma) -v;
-        end
-
-        function fp = fp_continuation(obj, x)
-            s_ext = x(1, :); s = x(2, :);
-            u = (s./(obj.par.alfa4 -s)).^(1./obj.par.delta);
-            v = (obj.par.alfa1./(u -obj.par.alfa3./(1 +s_ext.^obj.par.eta)) -1).^(1./obj.par.beta);
-            du_ds = (1./obj.par.delta).*(s./(obj.par.alfa4 -s)).^(1./obj.par.delta-1).*obj.par.alfa4./((obj.par.alfa4 -s).^2);
-            dv_ds = (1./obj.par.beta).*(obj.par.alfa1./(u -obj.par.alfa3./(1 +s_ext.^obj.par.eta)) -1).^(1./obj.par.beta-1).*(-obj.par.alfa1.*du_ds)./((u -obj.par.alfa3./(1+s_ext.^obj.par.eta)).^2);
-            dv_ds_ext = (1./obj.par.beta).*(obj.par.alfa1./(u -obj.par.alfa3./(1 +s_ext.^obj.par.eta)) -1).^(1./obj.par.beta-1).*((-obj.par.alfa1.*obj.par.alfa3.*obj.par.eta.*(s_ext.^(obj.par.eta-1)))./((1 +s_ext.^obj.par.eta).^2))./((u -obj.par.alfa3./(1+s_ext.^obj.par.eta)).^2);
-            df_ds = -obj.par.alfa2.*obj.par.gamma.*(u.^(obj.par.gamma-1)).*du_ds./((1+u.^obj.par.gamma).^2) -dv_ds;
-            df_ds_ext = -dv_ds_ext;
-            fp = [df_ds_ext; df_ds];
-        end
         
-        function [dydt] = df_model(obj, t, y, s_ext_supp, s_inh)
+        function [dydt] = df_model(obj, t, y, s_ext_supp, s_inh) %#ok<INUSL>
             n_cells = obj.neigh.m*obj.neigh.n;
             
             if isempty(s_ext_supp); s_ext_supp = 0; end
@@ -152,177 +129,6 @@ classdef u_v_dn_model < models.model
             d_s = (1-s_inh).*obj.par.alfa4.*u.^obj.par.delta./(1+u.^obj.par.delta) -obj.par.k_deg.*s;
             
             dydt = obj.par.lambda.*[d_v;d_u;d_s];
-        end
-        
-    end
-    
-    methods
-        function generate_ode_qss_file(obj, folder, filename)
-            m = obj.neigh.m;
-            n = obj.neigh.n;
-            if nargin<2; folder = ''; end
-            if nargin<3; filename = 'test'; end
-            fid = fopen(utils(1).fullfile(folder,[filename,'.ode']),'w');
-            try
-                % write initial conditions
-                fprintf(fid,'init n[0..%d]=%f\n',(m*n-1),obj.init_conds_main(obj.readout_var_idx));
-                
-                fprintf(fid,'\n');
-                
-                % write quasi-steady-state variables
-                fprintf(fid,'%%[0..%d]\n',(m*n-1));
-                fprintf(fid,'fgf[j]=alfa4*p(n[j])\n');
-                fprintf(fid,'g[j]=alfa2*g(n[j])\n');
-                fprintf(fid,'%%\n');
-                
-                fprintf(fid,'\n');
-                
-                % write aux variables
-                neighs = obj.neigh.get_neighs()-1;
-                for k=1:m*n
-                    [i,j] = ind2sub([m,n],k);
-                    fprintf(fid,'fgf_ex[%d]=(',k-1);
-                    nij = squeeze(neighs(i,j,:));
-                    neighs_ij = nij(~isnan(nij));
-                    for l=1:length(neighs_ij)
-                        if l==length(neighs_ij)
-                            fprintf(fid,'fgf[%d])/%d\n',neighs_ij(l),length(neighs_ij));
-                        else
-                            fprintf(fid,'fgf[%d]+',neighs_ij(l));
-                        end
-                    end
-                end
-                
-                fprintf(fid,'\n');
-                
-                % write main variable expressions
-                fprintf(fid,'%%[0..%d]\n',(m*n-1));
-                fprintf(fid,'n[j]''=alfa1*f(g[j])+alfa3*h(fgf_ex[j])-n[j]\n');
-                fprintf(fid,'%%\n');
-                
-                fprintf(fid,'\n');
-                
-                % write functions
-                fprintf(fid,'f(g)=1/(1+g^beta)\n');
-                fprintf(fid,'g(n)=1/(1+n^gamma)\n');
-                fprintf(fid,'h(fgf)=1/(1+fgf^eta)\n');
-                fprintf(fid,'p(n)=n^delta/(1+n^delta)*1/(1+(Finh/Finh_half)^delta)\n');
-                
-                fprintf(fid,'\n');
-                
-                % write parameters
-                fs_par = fields(obj.par);
-                for i=1:length(fs_par)
-                    fprintf(fid,'par %s=%f\n',fs_par{i},obj.par.(fs_par{i}));
-                end
-                
-                fprintf(fid,'\n');
-                
-                % write xpp main view parameters
-                fprintf(fid,'@ meth=cvode\n');
-                fprintf(fid,'@ xp=n0,yp=n1\n');
-                fprintf(fid,'@ xlo=0,xhi=4,ylo=0,yhi=4\n');
-                fprintf(fid,'@ dt=0.02,total=600,nmesh=200\n');
-                
-                fprintf(fid,'\n');
-
-                % write xpp auto parameters
-                fprintf(fid,'@ autovar=x,autoxmin=0.0,autoymin=0.0,autoxmax=6,autoymax=6\n');
-                fprintf(fid,'@ ntst=400,nmax=2500,npr=500,ds=0.01,dsmin=0.001,dsmax=0.05\n');
-                fprintf(fid,'@ ncol=4,epsl=1e-4,parmin=0,parmax=6,normmin=0,normmax=1000\n');
-                fprintf(fid,'@ epsu=1e-4,epss=0.0001\n');
-                
-                fprintf(fid,'\n');
-
-                fprintf(fid,'done\n');
-                
-            catch
-            end
-            fclose(fid);
-        end
-        
-        function generate_ode_file(obj, folder, filename)
-            m = obj.neigh.m;
-            n = obj.neigh.n;
-            if nargin<2; folder = ''; end
-            if nargin<3; filename = 'test'; end
-            fid = fopen(utils(1).fullfile(folder,[filename,'.ode']),'w');
-            
-            labels_ode = {'g', 'n', 'fgf'};
-            
-            try
-                % write initial conditions
-                for i=1:length(labels_ode)
-                    fprintf(fid,'init %s[0..%d]=%f\n',labels_ode{i},(m*n-1),obj.init_conds_main(i));
-                end
-                
-                fprintf(fid,'\n');
-                
-                % write aux variables
-                neighs = obj.neigh.get_neighs()-1;
-                for k=1:m*n
-                    [i,j] = ind2sub([m,n],k);
-                    fprintf(fid,'fgf_ex[%d]=(',k-1);
-                    nij = squeeze(neighs(i,j,:));
-                    neighs_ij = nij(~isnan(nij));
-                    for l=1:length(neighs_ij)
-                        if l==length(neighs_ij)
-                            fprintf(fid,'fgf[%d])/%d\n',neighs_ij(l),length(neighs_ij));
-                        else
-                            fprintf(fid,'fgf[%d]+',neighs_ij(l));
-                        end
-                    end
-                end
-                
-                fprintf(fid,'\n');
-                
-                % write main variable expressions
-                fprintf(fid,'%%[0..%d]\n',(m*n-1));
-                fprintf(fid,'n[j]''=alfa1*f(g[j])+alfa3*h(fgf_ex[j])-n[j]\n');
-                fprintf(fid,'g[j]''=alfa2*g(n[j])-g[j]\n');
-                fprintf(fid,'fgf[j]''=alfa4*p(n[j])-fgf[j]\n');
-
-                fprintf(fid,'%%\n');
-                
-                fprintf(fid,'\n');
-                
-                % write functions
-                fprintf(fid,'f(g)=1/(1+g^beta)\n');
-                fprintf(fid,'g(n)=1/(1+n^gamma)\n');
-                fprintf(fid,'h(fgf)=1/(1+fgf^eta)\n');
-                fprintf(fid,'p(n)=n^delta/(1+n^delta)*1/(1+(Finh/Finh_half)^delta)\n');
-                
-                fprintf(fid,'\n');
-                
-                % write parameters
-                fs_par = fields(obj.par);
-                for i=1:length(fs_par)
-                    fprintf(fid,'par %s=%f\n',fs_par{i},obj.par.(fs_par{i}));
-                end
-                
-                fprintf(fid,'\n');
-                
-                % write xpp main view parameters
-                fprintf(fid,'@ meth=cvode\n');
-                fprintf(fid,'@ xp=n0,yp=n1\n');
-                fprintf(fid,'@ xlo=0,xhi=4,ylo=0,yhi=4\n');
-                fprintf(fid,'@ dt=0.02,total=600,nmesh=200\n');
-                
-                fprintf(fid,'\n');
-
-                % write xpp auto parameters
-                fprintf(fid,'@ autovar=x,autoxmin=0.0,autoymin=0.0,autoxmax=6,autoymax=6\n');
-                fprintf(fid,'@ ntst=400,nmax=2500,npr=500,ds=0.01,dsmin=0.001,dsmax=0.05\n');
-                fprintf(fid,'@ ncol=4,epsl=1e-4,parmin=0,parmax=6,normmin=0,normmax=1000\n');
-                fprintf(fid,'@ epsu=1e-4,epss=0.0001\n');
-                
-                fprintf(fid,'\n');
-
-                fprintf(fid,'done\n');
-                
-            catch
-            end
-            fclose(fid);
-        end
+        end 
     end
 end

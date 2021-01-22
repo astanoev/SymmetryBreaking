@@ -44,6 +44,7 @@ classdef model_simulation < handle
             if nargin>4; obj.X_std = X_std; end
             if nargin<4; rng_init_seed = -1; end
             obj.set_rng_init(rng_init_seed);
+            %obj.set_time_vec();
         end
           
         function obj = uplus(obj1)
@@ -99,6 +100,17 @@ classdef model_simulation < handle
             end
         end
         
+        function set_time_vec(obj)
+%             if nargin<2; obj.time_vec = 0:obj.dt:obj.tmax; end
+%             try obj.s_ext = obj.par.s_ext; catch; obj.s_ext=0; end
+%             try obj.s_inh = obj.par.s_inh; catch; obj.s_inh=0; end
+%             if s_ext~=0 || s_inh~=0
+%                 obj.time_vec = time_vec;
+%                 obj.s_ext_vec = s_ext.*ones(size(time_vec));
+%                 obj.s_inh_vec = s_inh.*ones(size(time_vec));
+%             end
+        end
+        
         function append_condition(obj, condition)
             if isempty(obj.condition)
                 obj.condition = strcat('_',condition);
@@ -126,12 +138,13 @@ classdef model_simulation < handle
                     return;
                 end
             end
-            obj.model.update(obj.par);
+            %obj.model.update(obj.par);
         end
     end
     
     methods % Solvers        
         function integrate(obj, stochastic)
+            obj.set_time_vec();
             if obj.stochastic == true || (nargin>1 && stochastic == true)
                 obj.stochastic_simulation();
             else
@@ -170,6 +183,10 @@ classdef model_simulation < handle
             y_m(:,1) = init_state;
             dW = sqrt(obj.dt)*randn(obj.rng_stream, size(y_m));
             for i = 2:n_time_points
+%                 if mod(i, 100) == 0 && endsWith(class(obj.neigh),'range_grid')%'hill_prob_grid')
+%                     obj.model.neigh.set_n_selfneighs();
+%                     %obj.model.neigh.refresh_A();
+%                 end
                 t = (i-1) * obj.dt;
                 y_m(:,i) = y_m(:,i-1) + F(t,y_m(:,i-1))*obj.dt + G(t,y_m(:,i-1)).*dW(:,i) + 0.5.*G(t,y_m(:,i-1)).*Gder(t,y_m(:,i-1)).*(dW(:,i).^2-obj.dt);
             end
@@ -356,7 +373,6 @@ classdef model_simulation < handle
         end
         
         function fig = plot_grid(obj, include_state_space, visible)
-            if obj.neigh.m>8 || obj.neigh.n>8; disp('grid size is too large!'); return; end
             if nargin<2; include_state_space=1; end
             if nargin<3; visible = true; end
             if visible; fig = figure(); else; fig = figure('visible','off'); end            
